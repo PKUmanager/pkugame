@@ -15,7 +15,7 @@ https://github.com/github/gitignore/blob/master/Unity.gitignore
 
 # 【新增】忽略 Plastic SCM 产生的垃圾文件夹
 .plastic/
-/[Pp]lastic/
+[Pp]lastic/
 
 # By default unity supports Blender asset imports, *.blend1 blender files do not need to be commited to version control.
 *.blend1

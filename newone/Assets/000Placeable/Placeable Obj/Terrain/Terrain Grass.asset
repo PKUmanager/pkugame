@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   <Size>k__BackingField: {x: 0.5, y: 0.5}
   <Prefab>k__BackingField: {fileID: 2844428653296103537, guid: 15cdbec7f0659274c83c577e03f282a9, type: 3}
-  <Icon>k__BackingField: {fileID: 21300000, guid: bafadcf258df85b4686863cbaa688fba, type: 3}
+  <Icon>k__BackingField: {fileID: 21300000, guid: 00710d619a7eef44fab7e63d7ec9e913, type: 3}
   <GridType>k__BackingField: 1
   <ObjectGroupInfo>k__BackingField: 3
   <DynamicSize>k__BackingField: 0
