@@ -1,3 +1,4 @@
+#if UNITY_EDITOR   // <--- 【添加这行】告诉Unity：如果是编辑器模式，才看下面的代码
 using UnityEngine;
 using UnityEditor;
 
@@ -55,4 +56,4 @@ namespace FastMesh_Example
     }
 }
 
-
+#endif            // <--- 【添加这行】保护罩结束，打包时上面的全被忽略
