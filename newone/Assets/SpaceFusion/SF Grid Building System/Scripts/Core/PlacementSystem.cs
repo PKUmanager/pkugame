@@ -9,206 +9,190 @@ using SpaceFusion.SF_Grid_Building_System.Scripts.Scriptables;
 using SpaceFusion.SF_Grid_Building_System.Scripts.Utils;
 using UnityEngine;
 
-namespace SpaceFusion.SF_Grid_Building_System.Scripts.Core {
-    public class PlacementSystem : MonoBehaviour {
+namespace SpaceFusion.SF_Grid_Building_System.Scripts.Core
+{
+    public class PlacementSystem : MonoBehaviour
+    {
         public static PlacementSystem Instance;
 
-        [SerializeField]
-        private PreviewSystem previewSystem;
+        [SerializeField] private PreviewSystem previewSystem;
+        [SerializeField] private PlacementHandler placementHandler;
 
-        [SerializeField]
-        private PlacementHandler placementHandler;
+        // [新 UI 事件] true=显示确认/取消/旋转按钮，false=隐藏
+        public event Action<bool> OnSelectionChanged;
 
-
-        // EVENTS
+        // [修复报错关键点] 恢复这两个被删除的旧事件，供 CameraController 使用
         public event Action OnPlacementStateStart;
         public event Action OnPlacementStateEnd;
 
+        // [状态标记] 是否处于查看/编辑模式
+        public bool IsInspectionMode { get; private set; } = false;
+
         private readonly Dictionary<GridDataType, GridData> _gridDataMap = new();
-        private Vector3Int _lastDetectedPosition = Vector3Int.zero;
         private IPlacementState _stateHandler;
         private InputManager _inputManager;
         private GameConfig _gameConfig;
         private PlaceableObjectDatabase _database;
-
-
         private PlacementGrid _grid;
-        // !!!!some additional triggers to handle specific cases !!!
-        // for moving state we want to stop immediately after action is executed
-        // for remove and place we allow to have multi actions, so we don't need to select if after each action again
-        private bool _stopStateAfterAction;
 
-        /// <summary>
-        /// Make singleton, we only need to have 1 placement system active at a time
-        /// </summary>
-        private void Awake() {
-            if (Instance != null) {
-                Destroy(this);
-            }
+        // 辅助变量
+        private Vector3Int _lastDetectedPosition = Vector3Int.zero;
 
+        private void Awake()
+        {
+            if (Instance != null) { Destroy(gameObject); return; }
             Instance = this;
         }
 
-
-        public void Initialize(PlacementGrid grid) {
-            _grid = grid;
+        private void Start()
+        {
+            _inputManager = InputManager.Instance;
             _gameConfig = GameConfig.Instance;
             _database = _gameConfig.PlaceableObjectDatabase;
-            _inputManager = InputManager.Instance;
-            foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType))) {
-                // creates GridData for every possible gridType
-                _gridDataMap[gridType] = new GridData();
+
+            _inputManager.OnClicked += HandleClickAction;
+            _inputManager.OnExit += StopState;
+        }
+
+        public void Initialize(PlacementGrid grid)
+        {
+            _grid = grid;
+            InitializeGridData();
+        }
+
+        private void InitializeGridData()
+        {
+            foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType)))
+            {
+                _gridDataMap.Add(gridType, new GridData());
             }
+        }
 
+        // --- 1. 交互模式控制 ---
+
+        public void SetInspectionMode(bool isActive)
+        {
+            IsInspectionMode = isActive;
+            // 切换模式时，取消当前的任何操作
+            CancelAction();
+        }
+
+        public void StartPlacement(string assetID)
+        {
+            SetInspectionMode(false); // 关闭查看模式
             StopState();
+
+            _stateHandler = new PlacementState(assetID, _grid, previewSystem, _database, _gridDataMap, placementHandler);
+
+            // 同时触发新旧两个事件
+            OnSelectionChanged?.Invoke(true);
+            OnPlacementStateStart?.Invoke(); // [修复] 通知相机：开始放置了
         }
 
-
-        /// <summary>
-        /// LoadedObjectPlacementState
-        /// based on the loaded podata instantiates the according object and initializes it with all the loaded values
-        /// </summary>
-        public void InitializeLoadedObject(PlaceableObjectData podata) {
-            _stateHandler = new LoadedObjectPlacementState(podata, _grid, _database, _gridDataMap, placementHandler);
-            _stateHandler.OnAction(podata.gridPosition);
-            _stateHandler = null;
-        }
-
-        /// <summary>
-        /// initializes the PlacementState and adds all trigger functions
-        /// </summary>
-        public void StartPlacement(string assetIdentifier) {
+        public void StartMoving(PlacedObject placedObject)
+        {
+            SetInspectionMode(false);
             StopState();
-            _grid.SetVisualizationState(true);
-            _stateHandler = new PlacementState(assetIdentifier, _grid, previewSystem, _database, _gridDataMap, placementHandler);
-            _inputManager.OnClicked += StateAction;
-            _inputManager.OnExit += StopState;
-            _inputManager.OnRotate += RotateStructure;
-            OnPlacementStateStart?.Invoke();
+
+            _stateHandler = new MovingState(placedObject, _grid, previewSystem, _gridDataMap, placementHandler);
+
+            OnSelectionChanged?.Invoke(true);
+            OnPlacementStateStart?.Invoke(); // [修复] 通知相机：开始移动了
         }
 
-        /// <summary>
-        /// initializes the RemoveState and adds all trigger functions
-        /// </summary>
-        public void StartRemoving(GridDataType gridType) {
-            StopState();
-            _grid.SetVisualizationState(true);
-            _stateHandler = new RemoveState(_grid, previewSystem, _gridDataMap[gridType], placementHandler);
-            _inputManager.OnClicked += StateAction;
-            _inputManager.OnExit += StopState;
-            _inputManager.OnExit += ObjectGrouper.Instance.DisplayAll;
-            ObjectGrouper.Instance.DisplayOnlyObjectsOfSelectedGridType(gridType);
-        }
+        // --- 2. UI按钮绑定的方法 ---
 
-        /// <summary>
-        /// In the remove state if clicked on a grid cell, all objects across all gridData that have this position will be removed 
-        /// </summary>
-        public void StartRemovingAll() {
-            StopState();
-            _grid.SetVisualizationState(true);
-            _stateHandler = new RemoveAllState(_grid, previewSystem, _gridDataMap, placementHandler);
-            _inputManager.OnClicked += StateAction;
-            _inputManager.OnExit += StopState;
-            _inputManager.OnExit += ObjectGrouper.Instance.DisplayAll;
-            ObjectGrouper.Instance.DisplayAll();
-        }
-
-        /// <summary>
-        /// initializes the RemoveState, directly removes the object at the given gridPosition, and  sets the state to null again
-        /// </summary>
-        public void Remove(PlacedObject placedObject) {
-            var gridType = placedObject.placeable.GridType;
-            StopState();
-            _stateHandler = new RemoveState(_grid, previewSystem, _gridDataMap[gridType], placementHandler);
-            _stateHandler.OnAction(placedObject.data.gridPosition);
-            _stateHandler.EndState();
-            _stateHandler = null;
-
-        }
-
-        /// <summary>
-        /// initializes the MoveState and adds all trigger functions
-        /// </summary>
-        public void StartMoving(PlacedObject target) {
-            StopState();
-            _stopStateAfterAction = true;
-            _grid.SetVisualizationState(true);
-            _stateHandler = new MovingState(target, _grid, previewSystem, _gridDataMap, placementHandler);
-            _inputManager.OnClicked += StateAction;
-            _inputManager.OnExit += StopState;
-            _inputManager.OnRotate += RotateStructure;
-            OnPlacementStateStart?.Invoke();
-        }
-
-        public void StopState() {
-            //we should still disable the visualization even if there is no state available
-            _grid.SetVisualizationState(false);
-            if (_stateHandler == null) {
-                return;
+        public void ConfirmAction()
+        {
+            if (_stateHandler != null)
+            {
+                _stateHandler.OnConfirm();
+                StopState();
             }
-
-            // reset stop trigger;
-            _stopStateAfterAction = false;
-
-            _stateHandler.EndState();
-            _inputManager.OnClicked -= StateAction;
-            _inputManager.OnExit -= StopState;
-            _inputManager.OnExit -= ObjectGrouper.Instance.DisplayAll;
-            _inputManager.OnRotate -= RotateStructure;
-            _lastDetectedPosition = Vector3Int.zero;
-            // very Important: reset the placement state when we stop the placement
-            _stateHandler = null;
-            ObjectGrouper.Instance.DisplayAll();
-            OnPlacementStateEnd?.Invoke();
         }
 
-
-        /// <summary>
-        /// additional check if our pointer is over UI --> ignore action
-        /// calculates the current gridPosition and triggers Action of the selected state,
-        /// which will e.g. either place or remove the object (based on the state that we are currently in)
-        /// </summary>
-        private void StateAction() {
-            if (InputManager.IsPointerOverUIObject()) {
-                return;
+        public void CancelAction()
+        {
+            if (_stateHandler != null)
+            {
+                _stateHandler.OnCancel();
+                StopState();
             }
+        }
+
+        public void RotateStructure()
+        {
+            _stateHandler?.OnRotation();
+        }
+
+        // --- 3. 内部逻辑 ---
+
+        private void HandleClickAction()
+        {
+            if (_stateHandler == null || InputManager.IsPointerOverUIObject()) return;
 
             var mousePosition = _inputManager.GetSelectedMapPosition();
             var gridPosition = _grid.WorldToCell(mousePosition);
 
             _stateHandler.OnAction(gridPosition);
-            if (_stopStateAfterAction) {
-                StopState();
-            }
         }
 
-        /// <summary>
-        ///  triggers OnRotation function of the current state
-        /// </summary>
-        private void RotateStructure() {
-            _stateHandler.OnRotation();
+        private void StopState()
+        {
+            if (_stateHandler == null) return;
+            _stateHandler.EndState();
+            _stateHandler = null;
+
+            // 同时触发新旧两个事件
+            OnSelectionChanged?.Invoke(false);
+            OnPlacementStateEnd?.Invoke(); // [修复] 通知相机：放置/移动结束了
         }
 
+        // --- 4. 兼容其他功能的方法 ---
+        public void StartRemoving(GridDataType gridType)
+        {
+            StopState();
+            _stateHandler = new RemoveState(_grid, previewSystem, _gridDataMap[gridType], placementHandler);
 
-        /// <summary>
-        /// tracks the mousePosition and calculates the up to date gridPosition
-        /// if the gridPosition would change, we update the stateHandler state and the last detected position
-        /// </summary>
-        private void Update() {
-            if (_stateHandler == null) {
-                return;
+            OnSelectionChanged?.Invoke(true);
+            OnPlacementStateStart?.Invoke(); // [修复]
+        }
+
+        public void StartRemovingAll()
+        {
+            StopState();
+            _stateHandler = new RemoveAllState(_grid, previewSystem, _gridDataMap, placementHandler);
+
+            OnSelectionChanged?.Invoke(true);
+            OnPlacementStateStart?.Invoke(); // [修复]
+        }
+
+        public void InitializeLoadedObject(PlaceableObjectData podata)
+        {
+            var state = new LoadedObjectPlacementState(podata, _grid, _database, _gridDataMap, placementHandler);
+            state.OnConfirm();
+        }
+
+        public void Remove(PlacedObject placedObject)
+        {
+            var gridPosition = placedObject.data.gridPosition;
+            var gridData = _gridDataMap[placedObject.placeable.GridType];
+            gridData.RemoveObjectPositions(gridPosition);
+            placementHandler.RemoveObjectPositions(placedObject.data.guid);
+        }
+
+        private void Update()
+        {
+            if (_stateHandler != null)
+            {
+                var mousePosition = _inputManager.GetSelectedMapPosition();
+                var gridPosition = _grid.WorldToCell(mousePosition);
+                if (_lastDetectedPosition != gridPosition)
+                {
+                    _stateHandler.UpdateState(gridPosition);
+                    _lastDetectedPosition = gridPosition;
+                }
             }
-
-            // actual raycasted position on the grid floor
-            var mousePosition = _inputManager.GetSelectedMapPosition();
-            var gridPosition = _grid.WorldToCell(mousePosition);
-            // if nothing has changed for the grid position, we do not need to waste resources to calculate all the other stuff 
-            if (_lastDetectedPosition == gridPosition) {
-                return;
-            }
-
-            _stateHandler.UpdateState(gridPosition);
-            _lastDetectedPosition = gridPosition;
         }
     }
 }

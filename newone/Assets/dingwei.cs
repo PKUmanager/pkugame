@@ -103,7 +103,7 @@ public class GPSUnlocker : MonoBehaviour
             int waitSeconds = 15;
             while (Input.location.status == LocationServiceStatus.Initializing && waitSeconds > 0)
             {
-                if (textScanning) textScanning.text = $"卫星连接中... ({waitSeconds})";
+                if (textScanning) textScanning.text = $"正在为您定位... ({waitSeconds})";
                 yield return new WaitForSeconds(1);
                 waitSeconds--;
             }
@@ -120,7 +120,7 @@ public class GPSUnlocker : MonoBehaviour
         }
 
         // === 3. 扫描动画 ===
-        if (textScanning) textScanning.text = "正在搜寻地块B附近的信号...";
+        if (textScanning) textScanning.text = "正在搜寻地块附近的信号...";
         yield return new WaitForSeconds(1.5f);
 
         // === 4. 获取坐标并判定 (只看B) ===

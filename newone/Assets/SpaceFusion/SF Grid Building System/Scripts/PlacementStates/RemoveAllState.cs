@@ -5,22 +5,25 @@ using SpaceFusion.SF_Grid_Building_System.Scripts.Enums;
 using SpaceFusion.SF_Grid_Building_System.Scripts.Interfaces;
 using UnityEngine;
 
-
-namespace SpaceFusion.SF_Grid_Building_System.Scripts.PlacementStates {
+namespace SpaceFusion.SF_Grid_Building_System.Scripts.PlacementStates
+{
     /// <summary>
     /// RemoveAllState removes everything on the selected position, independent of the gridData
     /// </summary>
-    public class RemoveAllState : IPlacementState {
-        private string _guid;
+    public class RemoveAllState : IPlacementState
+    {
         private readonly IPlacementGrid _grid;
         private readonly PreviewSystem _previewSystem;
         private readonly Dictionary<GridDataType, GridData> _gridDataMap;
         private readonly PlacementHandler _placementHandler;
 
+        // [新增] 记录当前选中的位置
+        private Vector3Int _targetPos;
 
         public RemoveAllState(IPlacementGrid grid, PreviewSystem previewSystem,
             Dictionary<GridDataType, GridData> gridDataMap,
-            PlacementHandler placementHandler) {
+            PlacementHandler placementHandler)
+        {
             _grid = grid;
             _previewSystem = previewSystem;
             _gridDataMap = gridDataMap;
@@ -28,60 +31,76 @@ namespace SpaceFusion.SF_Grid_Building_System.Scripts.PlacementStates {
             previewSystem.StartShowingRemovePreview(_grid.CellSize);
         }
 
-
-        public void EndState() {
+        public void EndState()
+        {
             _previewSystem.StopShowingPreview();
         }
 
-        public void OnAction(Vector3Int gridPosition) {
+        // 1. 点击屏幕：只选中位置，更新预览
+        public void OnAction(Vector3Int gridPosition)
+        {
+            _targetPos = gridPosition;
+            UpdateState(gridPosition);
+        }
+
+        // 2. 点击确认：执行“全部删除”逻辑
+        public void OnConfirm()
+        {
             var hasDeletedSomething = false;
-            foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType))) {
+
+            // 遍历所有网格层级 (例如：建筑层、地形层)
+            foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType)))
+            {
                 var data = _gridDataMap[gridType];
-                // found grid data where something is placed --> so we can actually remove something
-                if (data.IsPlaceable(gridPosition, Vector2Int.one)) {
-                    continue;
+
+                // 检查该层在该位置是否有东西 (IsPlaceable返回true代表空，false代表有东西)
+                if (data.IsPlaceable(_targetPos, Vector2Int.one))
+                {
+                    continue; // 这一层是空的，跳过
                 }
 
-                _guid = data.GetGuid(gridPosition);
-                if (_guid == null) {
-                    Debug.LogWarning($"Remove action: Could not find guid for grid position {gridPosition}");
-                    return;
+                // 获取并移除
+                var guid = data.GetGuid(_targetPos);
+                if (guid != null)
+                {
+                    data.RemoveObjectPositions(_targetPos);
+                    _placementHandler.RemoveObjectPositions(guid);
+                    hasDeletedSomething = true;
                 }
-
-                // free the positions from the grid
-                data.RemoveObjectPositions(gridPosition);
-                _placementHandler.RemoveObjectPositions(_guid);
-                hasDeletedSomething = true;
             }
 
-            if (!hasDeletedSomething) {
-                Debug.LogWarning($"Nothing to remove on grid position: {gridPosition}");
+            if (!hasDeletedSomething)
+            {
+                Debug.LogWarning($"Remove All: Nothing to remove on grid position: {_targetPos}");
             }
-
-            var cellPosition = _grid.CellToWorld(gridPosition);
-            // return NEGATED empty position for the Update method
-            // since we want to remove an object, but the position is empty, our validity is false...
-            _previewSystem.UpdatePosition(cellPosition, !IsPositionEmpty(gridPosition), null);
         }
 
-        private bool IsPositionEmpty(Vector3Int gridPosition) {
-            foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType))) {
+        // 3. 点击取消：什么都不做
+        public void OnCancel() { }
+
+        public void OnRotation()
+        {
+            // 删除模式不需要旋转
+        }
+
+        public void UpdateState(Vector3Int gridPosition)
+        {
+            // 只要这里有任何东西，显示就有效(红色)；如果全是空的，可能是无效(透明/灰色)
+            var isValid = !IsPositionEmpty(gridPosition);
+            _previewSystem.UpdatePosition(_grid.CellToWorld(gridPosition), isValid, null);
+        }
+
+        private bool IsPositionEmpty(Vector3Int gridPosition)
+        {
+            foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType)))
+            {
                 var data = _gridDataMap[gridType];
-                if (!data.IsPlaceable(gridPosition, Vector2Int.one)) {
-                    return false;
+                if (!data.IsPlaceable(gridPosition, Vector2Int.one))
+                {
+                    return false; // 只要有一层不空，就返回 false
                 }
             }
-            // return true if all gridData are empty on this position
             return true;
-        }
-
-        public void UpdateState(Vector3Int gridPosition) {
-            var validity = !IsPositionEmpty(gridPosition);
-            _previewSystem.UpdatePosition(_grid.CellToWorld(gridPosition), validity, null);
-        }
-
-        public void OnRotation() {
-            // Do nothing since we only want to remove
         }
     }
 }
