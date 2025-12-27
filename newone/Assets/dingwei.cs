@@ -5,241 +5,209 @@ using System.Collections;
 
 public class GPSUnlocker : MonoBehaviour
 {
-    // ============ 地块 A 配置 ============
-    [Header("地块A - 范围与题目")]
-    public double plotA_MinLat; // 下边界
-    public double plotA_MaxLat; // 上边界
-    public double plotA_MinLon; // 左边界
-    public double plotA_MaxLon; // 右边界
-    [TextArea] public string questionA_Text; // A的题目文字
-    public Sprite questionA_Image;           // A的题目图片 【新增】
-    public string answerA_Correct;           // A的答案
+    // ============ 1. 核心交互对象 ============
+    [Header("【步骤0: 点击发现后要隐藏的界面】")]
+    public GameObject functionButtons; // 主界面那一排按钮
 
-    // ============ 地块 B 配置 ============
-    [Header("地块B - 范围与题目")]
+    [Header("【步骤4: 最终奖励】")]
+    public Button mainBuildBtn;        // 建造按钮
+
+    // ============ 2. QuizPanel UI绑定 ============
+    [Header("【QuizPanel 结构绑定】")]
+    public GameObject quizPanel;          // 总面板
+
+    [Header("--- 阶段1: 定位显示组 ---")]
+    public GameObject locationGroup;      // Location父物体
+    public Text textScanning;             // "Text_Location"
+    public Text textSuccess;              // "Text_Location success"
+
+    [Header("--- 阶段2: 答题交互组 ---")]
+    public Text questionText;             // 题目文字
+    public Image questionImage;           // 题目图片
+    public GameObject answerInputObj;     // 输入框物体
+    public GameObject submitBtnObj;       // 提交按钮物体
+    public Text feedbackText;             // 错误提示
+
+    public InputField inputFieldComponent; // 输入框组件
+
+    // ============ 3. 地块B 配置 (只保留B) ============
+    [Header("地块B配置 (唯一目标)")]
     public double plotB_MinLat;
     public double plotB_MaxLat;
     public double plotB_MinLon;
     public double plotB_MaxLon;
     [TextArea] public string questionB_Text;
-    public Sprite questionB_Image;           // B的题目图片 【新增】
+    public Sprite questionB_Image;
     public string answerB_Correct;
 
-    // ============ 全局设置 ============
-    [Header("绑定场景对象")]
-    public GameObject plotObject_A;
-    public GameObject plotObject_B;
-
-    [Header("UI绑定")]
-    public Text statusText;         // 调试信息
-    public Text successMessageText; // 解锁成功的大字
-
-    [Header("问答界面绑定")]
-    public GameObject quizPanel;    // 面板
-    public Text quizQuestionText;   // 面板里的文字题
-    public Image quizQuestionImage; // 面板里的图片位 【新增】
-    public InputField quizInput;    // 输入框
-    public Button quizSubmitBtn;    // 提交按钮
-    public Text quizFeedbackText; // 【新增】专门显示答错了的红字
+    [Header("场景物体")]
+    public GameObject plotObject_B; // 场景里的3D方块 B
 
     // 内部变量
     private bool isRunning = false;
-    private GameObject currentPlot;    // 当前正在处理哪个地块
-    private string currentAnswer;      // 当前题目的正确答案
 
-    // 缓冲距离：0.0001度 约等于 10-11米
-    private const double BufferDist = 0.0001;
+    // 【判定范围】 0.0002度 ≈ 20-22米
+    private const double SearchRange = 0.0002;
 
     void Start()
     {
-        // 初始化UI
+        // 初始化状态
+        if (mainBuildBtn) mainBuildBtn.interactable = false;
         if (quizPanel) quizPanel.SetActive(false);
-        if (successMessageText) successMessageText.text = "";
-        if (quizSubmitBtn) quizSubmitBtn.onClick.AddListener(OnSubmitAnswer);
+        if (functionButtons) functionButtons.SetActive(true);
 
-        StartCoroutine(StartLocationService());
+        // 绑定按钮
+        if (submitBtnObj)
+        {
+            Button btn = submitBtnObj.GetComponent<Button>();
+            if (btn)
+            {
+                btn.onClick.RemoveAllListeners();
+                btn.onClick.AddListener(OnSubmitAnswer);
+            }
+        }
     }
 
-    void Update()
+    // 点击“发现”按钮的入口
+    public void StartDiscoveryProcess()
     {
-        if (!isRunning) return;
+        if (functionButtons) functionButtons.SetActive(false);
+        StartCoroutine(DiscoveryRoutine());
+    }
 
-        // 1. 获取实时位置
+    IEnumerator DiscoveryRoutine()
+    {
+        // === 1. 初始化UI ===
+        quizPanel.SetActive(true);
+        if (locationGroup) locationGroup.SetActive(true);
+        if (textScanning) textScanning.gameObject.SetActive(true);
+        if (textSuccess) textSuccess.gameObject.SetActive(false);
+
+        // 隐藏答题部分
+        if (answerInputObj) answerInputObj.SetActive(false);
+        if (submitBtnObj) submitBtnObj.SetActive(false);
+        if (questionText) questionText.gameObject.SetActive(false);
+        if (questionImage) questionImage.gameObject.SetActive(false);
+        if (feedbackText) feedbackText.text = "";
+
+        // === 2. 启动GPS ===
+        if (!isRunning)
+        {
+            if (!Permission.HasUserAuthorizedPermission(Permission.FineLocation))
+            {
+                Permission.RequestUserPermission(Permission.FineLocation);
+                yield return new WaitForSeconds(1);
+            }
+            Input.location.Start(5f, 5f);
+
+            int waitSeconds = 15;
+            while (Input.location.status == LocationServiceStatus.Initializing && waitSeconds > 0)
+            {
+                if (textScanning) textScanning.text = $"卫星连接中... ({waitSeconds})";
+                yield return new WaitForSeconds(1);
+                waitSeconds--;
+            }
+
+            if (waitSeconds < 1 || Input.location.status == LocationServiceStatus.Failed)
+            {
+                if (textScanning) textScanning.text = "GPS信号获取失败";
+                yield return new WaitForSeconds(2);
+                quizPanel.SetActive(false);
+                if (functionButtons) functionButtons.SetActive(true);
+                yield break;
+            }
+            isRunning = true;
+        }
+
+        // === 3. 扫描动画 ===
+        if (textScanning) textScanning.text = "正在搜寻地块B附近的信号...";
+        yield return new WaitForSeconds(1.5f);
+
+        // === 4. 获取坐标并判定 (只看B) ===
         double curLat = Input.location.lastData.latitude;
         double curLon = Input.location.lastData.longitude;
-        float accuracy = Input.location.lastData.horizontalAccuracy;
 
-        // 2. 【新增】计算地块 A 和 B 的“中心点”坐标
-        // 原理：(最小+最大)/2 就是中间的位置
-        double centerLat_A = (plotA_MinLat + plotA_MaxLat) / 2;
-        double centerLon_A = (plotA_MinLon + plotA_MaxLon) / 2;
+        // 【关键逻辑】使用 0.0002 (20米) 判定是否在地块 B 范围内
+        bool nearB = IsInsideRect(curLat, curLon, plotB_MinLat, plotB_MaxLat, plotB_MinLon, plotB_MaxLon, SearchRange);
 
-        double centerLat_B = (plotB_MinLat + plotB_MaxLat) / 2;
-        double centerLon_B = (plotB_MinLon + plotB_MaxLon) / 2;
-
-        // 3. 【新增】计算你距离这两个中心点有多远
-        float distToA = CalculateDistance(curLat, curLon, centerLat_A, centerLon_A);
-        float distToB = CalculateDistance(curLat, curLon, centerLat_B, centerLon_B);
-
-        // 4. 【修改】更新调试文字，显示所有信息
-        if (statusText)
+        if (nearB)
         {
-            statusText.text = $"精度: {accuracy}米\n" +
-                              $"当前坐标: {curLat:F6}, {curLon:F6}\n" +
-                              $"--------------------\n" +
-                              $"距 A 中心: {distToA:F1} 米\n" +
-                              $"距 B 中心: {distToB:F1} 米";
-        }
+            // ---> 成功 <---
+            if (textScanning) textScanning.gameObject.SetActive(false);
+            if (textSuccess) textSuccess.gameObject.SetActive(true);
 
-        // --- 核心逻辑检测 (保持不变) ---
-        CheckPlotStatus(curLat, curLon,
-            plotA_MinLat, plotA_MaxLat, plotA_MinLon, plotA_MaxLon,
-            plotObject_A, "地块A",
-            questionA_Text, questionA_Image, answerA_Correct);
+            yield return new WaitForSeconds(1.5f); // 停留展示成功
 
-        CheckPlotStatus(curLat, curLon,
-            plotB_MinLat, plotB_MaxLat, plotB_MinLon, plotB_MaxLon,
-            plotObject_B, "地块B",
-            questionB_Text, questionB_Image, answerB_Correct);
-    }
+            if (locationGroup) locationGroup.SetActive(false);
 
-    // 通用的检测逻辑函数
-    void CheckPlotStatus(double lat, double lon,
-                         double minLat, double maxLat, double minLon, double maxLon,
-                         GameObject plotObj, string plotName,
-                         string qText, Sprite qImg, string correctAns)
-    {
-        var renderer = plotObj.GetComponent<Renderer>();
-
-        // 1. 如果已经绿了(解锁了)，就完全不管它了，跳过
-        if (renderer.material.color == Color.green) return;
-
-        // 2. 判定是否在“内圈”（地块内部）
-        bool insideInner = IsInsideRect(lat, lon, minLat, maxLat, minLon, maxLon, 0);
-
-        // 3. 判定是否在“外圈”（地块 + 10米缓冲）
-        bool insideOuter = IsInsideRect(lat, lon, minLat, maxLat, minLon, maxLon, BufferDist);
-
-        if (insideInner)
-        {
-            // === 状态：进入地块内部 ===
-            // 只有当面板没打开时，才触发（防止每一帧都重置题目）
-            if (!quizPanel.activeSelf)
-            {
-                OpenQuiz(plotObj, qText, qImg, correctAns);
-            }
-        }
-        else if (insideOuter)
-        {
-            // === 状态：在附近10米内 ===
-            // 变红，提示周边有地块
-            if (renderer.material.color != Color.red)
-            {
-                renderer.material.color = Color.red;
-            }
+            // 显示 B 的题目
+            ShowQuiz(questionB_Text, questionB_Image);
         }
         else
         {
-            // === 状态：离得很远 ===
-            // 恢复成白色/灰色 (或者你设定的默认色)
-            if (renderer.material.color != Color.white && renderer.material.color != Color.red)
-            {
-                // 注意：这里为了不覆盖掉从红色变回来的逻辑，只有非红非白才变
-                // 简单处理：只要不在范围内且没解锁，就变白
-                renderer.material.color = Color.white;
-            }
-            // 修正：更简单的逻辑是，只要没解锁且不在红区，就是白
-            if (!insideInner && !insideOuter) renderer.material.color = Color.white;
+            // ---> 失败 <---
+            // 计算距离B中心的距离
+            float dist = CalculateDistance(curLat, curLon, (plotB_MinLat + plotB_MaxLat) / 2, (plotB_MinLon + plotB_MaxLon) / 2);
+
+            if (textScanning) textScanning.text = $"未在区域内\n距离目标还有: {dist:F0}米";
+            yield return new WaitForSeconds(3f);
+
+            quizPanel.SetActive(false);
+            if (functionButtons) functionButtons.SetActive(true);
         }
     }
 
-    // 打开问答面板
-    void OpenQuiz(GameObject plotObj, string text, Sprite img, string ans)
+    void ShowQuiz(string qText, Sprite qImg)
     {
-        currentPlot = plotObj;
-        currentAnswer = ans;
+        if (questionText)
+        {
+            questionText.gameObject.SetActive(true);
+            questionText.text = qText;
+        }
+        if (questionImage)
+        {
+            questionImage.sprite = qImg;
+            questionImage.gameObject.SetActive(qImg != null);
+        }
 
-        quizPanel.SetActive(true);
-        quizQuestionText.text = text;
-        quizQuestionImage.sprite = img; // 【设置图片】
-        // 如果没有图片，就隐藏图片框，防止显示白方块
-        quizQuestionImage.gameObject.SetActive(img != null);
-        if (quizFeedbackText) quizFeedbackText.text = "";
-        quizInput.text = ""; // 清空输入框
-        Handheld.Vibrate();  // 震动提示
+        if (answerInputObj) answerInputObj.SetActive(true);
+        if (submitBtnObj) submitBtnObj.SetActive(true);
+        if (inputFieldComponent) inputFieldComponent.text = "";
     }
 
-    // 提交答案
     void OnSubmitAnswer()
     {
-        // 建议加上 Trim() 去除玩家不小心输进去的空格
-        if (quizInput.text.Trim() == currentAnswer)
+        if (inputFieldComponent == null) return;
+        string playerInput = inputFieldComponent.text.Trim();
+
+        // 直接比对 B 的答案
+        if (playerInput == answerB_Correct)
         {
-            UnlockSuccess();
+            // 答对：变绿、关面板、开建造、回主页
+            if (plotObject_B) plotObject_B.GetComponent<Renderer>().material.color = Color.green;
+            quizPanel.SetActive(false);
+
+            if (mainBuildBtn) mainBuildBtn.interactable = true;
+            if (functionButtons) functionButtons.SetActive(true);
         }
         else
         {
-            // 答错了：写在专用的反馈文本上
-            if (quizFeedbackText)
-            {
-                quizFeedbackText.text = "答案错误，请仔细观察！";
-            }
-
-            // 为了体验好，可以不完全清空输入框，或者让输入框抖动一下（进阶）
-            // 这里我们只清空输入框
-            quizInput.text = "";
+            if (feedbackText) feedbackText.text = "答案不正确";
+            inputFieldComponent.text = "";
         }
     }
 
-    // 解锁成功
-    void UnlockSuccess()
-    {
-        // 变绿
-        currentPlot.GetComponent<Renderer>().material.color = Color.green;
-
-        // 关闭问答
-        quizPanel.SetActive(false);
-
-        // 显示大字
-        if (successMessageText)
-        {
-            successMessageText.text = "地块解锁成功，\n开始建造吧！";
-            StartCoroutine(ClearTextAfterDelay(4f));
-        }
-    }
-
-    // 矩形判定算法 (padding是扩充范围，单位度)
+    // 保持你的定位方法不变
     bool IsInsideRect(double curLat, double curLon, double minLat, double maxLat, double minLon, double maxLon, double padding)
     {
         return (curLat >= minLat - padding) && (curLat <= maxLat + padding) &&
                (curLon >= minLon - padding) && (curLon <= maxLon + padding);
     }
 
-    IEnumerator ClearTextAfterDelay(float delay)
-    {
-        yield return new WaitForSeconds(delay);
-        if (successMessageText) successMessageText.text = "";
-    }
-
-    // GPS启动协程 (保持不变，省略以节省篇幅，请保留之前的StartLocationService代码)
-    IEnumerator StartLocationService()
-    {
-        if (!Permission.HasUserAuthorizedPermission(Permission.FineLocation))
-        {
-            Permission.RequestUserPermission(Permission.FineLocation);
-            yield return new WaitForSeconds(1);
-        }
-        Input.location.Start(5f, 5f);
-        int maxWait = 20;
-        while (Input.location.status == LocationServiceStatus.Initializing && maxWait > 0) { yield return new WaitForSeconds(1); maxWait--; }
-        if (maxWait < 1 || Input.location.status == LocationServiceStatus.Failed) yield break;
-        isRunning = true;
-    }
-
-    // 计算两点之间距离的数学公式 (结果单位：米)
+    // 仅用于失败时计算显示距离
     float CalculateDistance(double lat1, double lon1, double lat2, double lon2)
     {
-        var R = 6371e3; // 地球半径
+        var R = 6371e3;
         var rad = Mathf.Deg2Rad;
         var dLat = (lat2 - lat1) * rad;
         var dLon = (lon2 - lon1) * rad;
