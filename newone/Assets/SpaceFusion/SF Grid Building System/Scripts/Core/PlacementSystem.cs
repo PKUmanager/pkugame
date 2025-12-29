@@ -15,184 +15,258 @@ namespace SpaceFusion.SF_Grid_Building_System.Scripts.Core
     {
         public static PlacementSystem Instance;
 
-        [SerializeField] private PreviewSystem previewSystem;
-        [SerializeField] private PlacementHandler placementHandler;
+        [SerializeField]
+        private PreviewSystem previewSystem;
 
-        // [新 UI 事件] true=显示确认/取消/旋转按钮，false=隐藏
-        public event Action<bool> OnSelectionChanged;
+        [SerializeField]
+        private PlacementHandler placementHandler;
 
-        // [修复报错关键点] 恢复这两个被删除的旧事件，供 CameraController 使用
+        // EVENTS
         public event Action OnPlacementStateStart;
         public event Action OnPlacementStateEnd;
 
-        // [状态标记] 是否处于查看/编辑模式
-        public bool IsInspectionMode { get; private set; } = false;
-
         private readonly Dictionary<GridDataType, GridData> _gridDataMap = new();
+        private Vector3Int _lastDetectedPosition = Vector3Int.zero;
         private IPlacementState _stateHandler;
         private InputManager _inputManager;
         private GameConfig _gameConfig;
         private PlaceableObjectDatabase _database;
-        private PlacementGrid _grid;
 
-        // 辅助变量
-        private Vector3Int _lastDetectedPosition = Vector3Int.zero;
+        private PlacementGrid _grid;
+        private bool _stopStateAfterAction;
+
+        private Vector3Int _pendingGridPosition;
+        private bool _hasSelection;
 
         private void Awake()
         {
-            if (Instance != null) { Destroy(gameObject); return; }
+            if (Instance != null)
+            {
+                Destroy(this);
+            }
             Instance = this;
-        }
-
-        private void Start()
-        {
-            _inputManager = InputManager.Instance;
-            _gameConfig = GameConfig.Instance;
-            _database = _gameConfig.PlaceableObjectDatabase;
-
-            _inputManager.OnClicked += HandleClickAction;
-            _inputManager.OnExit += StopState;
         }
 
         public void Initialize(PlacementGrid grid)
         {
             _grid = grid;
-            InitializeGridData();
-        }
-
-        private void InitializeGridData()
-        {
+            _gameConfig = GameConfig.Instance;
+            _database = _gameConfig.PlaceableObjectDatabase;
+            _inputManager = InputManager.Instance;
             foreach (GridDataType gridType in Enum.GetValues(typeof(GridDataType)))
             {
-                _gridDataMap.Add(gridType, new GridData());
+                _gridDataMap[gridType] = new GridData();
             }
-        }
-
-        // --- 1. 交互模式控制 ---
-
-        public void SetInspectionMode(bool isActive)
-        {
-            IsInspectionMode = isActive;
-            // 切换模式时，取消当前的任何操作
-            CancelAction();
-        }
-
-        public void StartPlacement(string assetID)
-        {
-            SetInspectionMode(false); // 关闭查看模式
             StopState();
-
-            _stateHandler = new PlacementState(assetID, _grid, previewSystem, _database, _gridDataMap, placementHandler);
-
-            // 同时触发新旧两个事件
-            OnSelectionChanged?.Invoke(true);
-            OnPlacementStateStart?.Invoke(); // [修复] 通知相机：开始放置了
         }
 
-        public void StartMoving(PlacedObject placedObject)
+        public void InitializeLoadedObject(PlaceableObjectData podata)
         {
-            SetInspectionMode(false);
-            StopState();
-
-            _stateHandler = new MovingState(placedObject, _grid, previewSystem, _gridDataMap, placementHandler);
-
-            OnSelectionChanged?.Invoke(true);
-            OnPlacementStateStart?.Invoke(); // [修复] 通知相机：开始移动了
-        }
-
-        // --- 2. UI按钮绑定的方法 ---
-
-        public void ConfirmAction()
-        {
-            if (_stateHandler != null)
-            {
-                _stateHandler.OnConfirm();
-                StopState();
-            }
-        }
-
-        public void CancelAction()
-        {
-            if (_stateHandler != null)
-            {
-                _stateHandler.OnCancel();
-                StopState();
-            }
-        }
-
-        public void RotateStructure()
-        {
-            _stateHandler?.OnRotation();
-        }
-
-        // --- 3. 内部逻辑 ---
-
-        private void HandleClickAction()
-        {
-            if (_stateHandler == null || InputManager.IsPointerOverUIObject()) return;
-
-            var mousePosition = _inputManager.GetSelectedMapPosition();
-            var gridPosition = _grid.WorldToCell(mousePosition);
-
-            _stateHandler.OnAction(gridPosition);
-        }
-
-        private void StopState()
-        {
-            if (_stateHandler == null) return;
-            _stateHandler.EndState();
+            _stateHandler = new LoadedObjectPlacementState(podata, _grid, _database, _gridDataMap, placementHandler);
+            _stateHandler.OnAction(podata.gridPosition);
             _stateHandler = null;
-
-            // 同时触发新旧两个事件
-            OnSelectionChanged?.Invoke(false);
-            OnPlacementStateEnd?.Invoke(); // [修复] 通知相机：放置/移动结束了
         }
 
-        // --- 4. 兼容其他功能的方法 ---
+        public void StartPlacement(string assetIdentifier)
+        {
+            StopState();
+            _grid.SetVisualizationState(true);
+            _stateHandler = new PlacementState(assetIdentifier, _grid, previewSystem, _database, _gridDataMap, placementHandler);
+
+            _inputManager.OnClicked += OnInputClick;
+            _inputManager.OnRotate += RotateStructure;
+
+            _hasSelection = false;
+            OnPlacementStateStart?.Invoke();
+
+            // 建造模式：默认在屏幕中心显示预览
+            UpdatePreviewAtScreenCenter();
+        }
+
         public void StartRemoving(GridDataType gridType)
         {
             StopState();
+            _grid.SetVisualizationState(true);
             _stateHandler = new RemoveState(_grid, previewSystem, _gridDataMap[gridType], placementHandler);
 
-            OnSelectionChanged?.Invoke(true);
-            OnPlacementStateStart?.Invoke(); // [修复]
+            _inputManager.OnClicked += OnInputClick;
+            _inputManager.OnExit += ObjectGrouper.Instance.DisplayAll;
+            ObjectGrouper.Instance.DisplayOnlyObjectsOfSelectedGridType(gridType);
+
+            _hasSelection = false;
+
+            // 删除模式：可以选择是否在中心显示红框，这里保留显示作为提示，但不会自动删除
+            // UpdatePreviewAtScreenCenter(); 
         }
 
         public void StartRemovingAll()
         {
             StopState();
+            _grid.SetVisualizationState(true);
             _stateHandler = new RemoveAllState(_grid, previewSystem, _gridDataMap, placementHandler);
 
-            OnSelectionChanged?.Invoke(true);
-            OnPlacementStateStart?.Invoke(); // [修复]
-        }
+            _inputManager.OnClicked += OnInputClick;
+            _inputManager.OnExit += ObjectGrouper.Instance.DisplayAll;
+            ObjectGrouper.Instance.DisplayAll();
 
-        public void InitializeLoadedObject(PlaceableObjectData podata)
-        {
-            var state = new LoadedObjectPlacementState(podata, _grid, _database, _gridDataMap, placementHandler);
-            state.OnConfirm();
+            _hasSelection = false;
+
+            // UpdatePreviewAtScreenCenter();
         }
 
         public void Remove(PlacedObject placedObject)
         {
-            var gridPosition = placedObject.data.gridPosition;
-            var gridData = _gridDataMap[placedObject.placeable.GridType];
-            gridData.RemoveObjectPositions(gridPosition);
-            placementHandler.RemoveObjectPositions(placedObject.data.guid);
+            var gridType = placedObject.placeable.GridType;
+            StopState();
+            _stateHandler = new RemoveState(_grid, previewSystem, _gridDataMap[gridType], placementHandler);
+            _stateHandler.OnAction(placedObject.data.gridPosition);
+            _stateHandler.EndState();
+            _stateHandler = null;
         }
 
-        private void Update()
+        public void StartMoving(PlacedObject target)
+        {
+            StopState();
+            _stopStateAfterAction = true;
+            _grid.SetVisualizationState(true);
+            _stateHandler = new MovingState(target, _grid, previewSystem, _gridDataMap, placementHandler);
+
+            _inputManager.OnClicked += OnInputClick;
+            _inputManager.OnExit += StopState;
+            _inputManager.OnRotate += RotateStructure;
+
+            _hasSelection = false;
+            OnPlacementStateStart?.Invoke();
+
+            UpdatePreviewAtScreenCenter();
+        }
+
+        public void StopState()
+        {
+            _grid.SetVisualizationState(false);
+            if (_stateHandler == null) return;
+
+            _stopStateAfterAction = false;
+            _hasSelection = false;
+
+            _stateHandler.EndState();
+            _inputManager.OnClicked -= OnInputClick;
+            _inputManager.OnExit -= StopState;
+            _inputManager.OnExit -= ObjectGrouper.Instance.DisplayAll;
+            _inputManager.OnRotate -= RotateStructure;
+            _lastDetectedPosition = Vector3Int.zero;
+
+            _stateHandler = null;
+            ObjectGrouper.Instance.DisplayAll();
+            OnPlacementStateEnd?.Invoke();
+        }
+
+        private void UpdatePreviewAtScreenCenter()
+        {
+            if (_stateHandler == null) return;
+
+            Camera cam = GameManager.Instance.SceneCamera != null ? GameManager.Instance.SceneCamera : Camera.main;
+            Ray ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
+
+            if (Physics.Raycast(ray, out RaycastHit hit, Mathf.Infinity, _gameConfig.PlacementLayerMask))
+            {
+                Vector3Int centerGridPos = _grid.WorldToCell(hit.point);
+                _stateHandler.UpdateState(centerGridPos);
+
+                // 只有在非删除模式下，才把中心位置标记为“待确认”
+                // 删除模式下，我们只显示红框（Hover效果），不预选
+                if (!IsRemovalState())
+                {
+                    _pendingGridPosition = centerGridPos;
+                    _hasSelection = true;
+                }
+
+                _lastDetectedPosition = centerGridPos;
+            }
+        }
+
+        /// <summary>
+        /// [核心修改] 处理点击
+        /// </summary>
+        private void OnInputClick()
+        {
+            if (InputManager.IsPointerOverUIObject()) return;
+            if (_stateHandler == null) return;
+
+            var mousePosition = _inputManager.GetSelectedMapPosition();
+            var gridPosition = _grid.WorldToCell(mousePosition);
+
+            // [逻辑判断] 区分 放置模式 和 删除模式
+            if (IsRemovalState())
+            {
+                // ============================
+                // 1. 删除模式：直接执行，不需要确认
+                // ============================
+                _stateHandler.OnAction(gridPosition);
+
+                // 删除后不需要保持选中状态
+                _hasSelection = false;
+            }
+            else
+            {
+                // ============================
+                // 2. 建造/移动模式：更新预览，等待UI确认
+                // ============================
+                _stateHandler.UpdateState(gridPosition);
+                _pendingGridPosition = gridPosition;
+                _hasSelection = true;
+            }
+        }
+
+        /// <summary>
+        /// [新增辅助方法] 判断当前是否处于删除状态
+        /// </summary>
+        private bool IsRemovalState()
+        {
+            return _stateHandler is RemoveState || _stateHandler is RemoveAllState;
+        }
+
+        // Confirm 按钮只会在 建造/移动模式 下生效
+        public void ConfirmPlacement()
+        {
+            if (_stateHandler == null) return;
+            // 如果是删除模式，Confirm按钮其实不应该出现，或者点击无效
+            if (IsRemovalState()) return;
+
+            if (!_hasSelection) return;
+
+            _stateHandler.OnAction(_pendingGridPosition);
+            _hasSelection = false;
+
+            if (_stopStateAfterAction)
+            {
+                StopState();
+            }
+            else
+            {
+                _stateHandler.UpdateState(_pendingGridPosition);
+                _hasSelection = true;
+            }
+        }
+
+        // Cancel 按钮用于退出任何模式
+        public void CancelPlacement()
+        {
+            StopState();
+        }
+
+        private void RotateStructure()
         {
             if (_stateHandler != null)
             {
-                var mousePosition = _inputManager.GetSelectedMapPosition();
-                var gridPosition = _grid.WorldToCell(mousePosition);
-                if (_lastDetectedPosition != gridPosition)
+                _stateHandler.OnRotation();
+                if (_hasSelection)
                 {
-                    _stateHandler.UpdateState(gridPosition);
-                    _lastDetectedPosition = gridPosition;
+                    _stateHandler.UpdateState(_pendingGridPosition);
                 }
             }
         }
+
+        private void Update() { }
     }
 }
