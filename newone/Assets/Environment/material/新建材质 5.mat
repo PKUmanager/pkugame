@@ -9,7 +9,7 @@ Material:
   m_PrefabAsset: {fileID: 0}
   m_Name: "\u65B0\u5EFA\u6750\u8D28 5"
   m_Shader: {fileID: 4800000, guid: 71d6765ad72e11541bc1448c891bbcf9, type: 3}
-  m_Parent: {fileID: 2100000, guid: fe13f243ae7e26c4f92d1fb59b20e93c, type: 2}
+  m_Parent: {fileID: 2100000, guid: 202e62f764abfb546a5cbe248c482b73, type: 2}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords:
   - PROPIXELIZER_DITHERING_ON
